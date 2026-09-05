@@ -25,6 +25,7 @@ import type { ProRegistry, WireTransformContext } from '../api/pro-registry.js'
 import { oaiMessageText } from '../api/oai-types.js'
 import type { OaiMessage } from '../api/oai-types.js'
 import type { ProviderConfig } from '../config/schema.js'
+import { isSystemReminder } from '../prompt/system-reminder.js'
 
 const SPARK_PROVIDER = 'deepseek-spark'
 
@@ -55,14 +56,29 @@ function estimateTokens(text: string): number {
   return Math.ceil(ascii / 4) + Math.ceil(cjk / 1.2)
 }
 
-/** 保留尾部 <=N token 时的切点：返回 text.slice(i) 的起始下标。 */
+/** 保留尾部 <=N token 时的切点：返回 text.slice(i) 的起始下标（最长满足预算的后缀）。
+ *  单次后向扫描累计字符类计数，O(len)，避免逐切片重估的 O(len²)。
+ *  按 UTF-16 code unit 遍历（对齐 slice 语义）；astral 字符（代理对）的低代理项跳过、
+ *  高代理项计为 ascii，与 micro.ts 的 code-point 计法仅在此罕见情形有可忽略差异。 */
 function tailCutIndex(text: string, n: number): number {
-  // estimateTokens(text.slice(i)) 关于 i 单调递减；从后往前找首个满足 <=N 的切点。
-  let i = text.length
-  while (i > 0 && estimateTokens(text.slice(i)) <= n) {
-    i--
+  const len = text.length
+  if (len === 0) return 0
+  if (estimateTokens(text) <= n) return 0 // 整体已达标，无需截断
+  let ascii = 0
+  let cjk = 0
+  let cut = len // 兜底：预算不足时保留空后缀
+  for (let i = len - 1; i >= 0; i--) {
+    const code = text.charCodeAt(i)
+    if (code >= 0xdc00 && code <= 0xdfff) continue // 低代理项，随高代理项一起计
+    if (isCjkCodePoint(code)) cjk++
+    else ascii++
+    if (Math.ceil(ascii / 4) + Math.ceil(cjk / 1.2) <= n) {
+      cut = i // 该后缀仍在预算内，记录为当前最优切点
+    } else {
+      break // 后缀已超预算，更大的后缀也超
+    }
   }
-  return i
+  return cut
 }
 
 // ---------------------------------------------------------------------------
@@ -76,9 +92,14 @@ function isProModel(model: string | undefined): boolean {
 
 /** 从 ctx 取当前档位的截断 N；ctx 缺席时回退 env（会话首启语义）。 */
 function truncateNFor(ctx: WireTransformContext | undefined, model: string | undefined): number {
+  const pro = isProModel(model)
   const n = ctx?.truncateN
-  if (n) return isProModel(model) ? n.pro : n.flash
-  return isProModel(model) ? defaultProN() : defaultFlashN()
+  if (n) {
+    const v = pro ? n.pro : n.flash
+    // 冻结 ctx 缺失/非法时逐键回退 env 默认，绝不产生 n=undefined 导致 reasoning 被抹空。
+    if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+  }
+  return pro ? defaultProN() : defaultFlashN()
 }
 
 function parseIntEnv(name: string, fallback: number, min = 1): number {
@@ -166,9 +187,11 @@ function wireTransform(m: OaiMessage, model: string | undefined, ctx?: WireTrans
 // 3. ReasoningAnchorExtractor：从被截断丢弃的前段提取「已排除路径」锚点句
 // ---------------------------------------------------------------------------
 
+// 仅中文标记：系统后缀强制中文推理，英文 pass/skip/reject 会误命中代码里的
+// 英文标识符/路径，故去掉（clean-room 默认，未与闭源实现黑盒对齐）。
 const EXCLUDE_MARKERS = [
   '排除', '不采用', '不是最优', '不可行', '此路不通', '行不通',
-  '放弃', '不要尝试', '不适合', '否决', 'pass', 'skip', 'reject',
+  '放弃', '不要尝试', '不适合', '否决',
 ]
 
 function extractAnchors(reasoning: string, model: string | undefined, ctx?: WireTransformContext): string[] {
@@ -185,7 +208,6 @@ function extractAnchors(reasoning: string, model: string | undefined, ctx?: Wire
   const anchors: string[] = []
   const seen = new Set<string>()
   for (const s of sentences) {
-    if (anchors.length >= 20) break
     if (!EXCLUDE_MARKERS.some(mk => s.includes(mk))) continue
     const anchor = normalizeAnchor(s)
     if (!anchor || seen.has(anchor)) continue
@@ -215,10 +237,13 @@ const CONTINUATION_PATTERNS = [
 ]
 
 function extractGoal(messages: OaiMessage[]): string | null {
-  const userMsgs = messages.filter(m => m.role === 'user')
+  // 跳过纯系统提醒注入（role:user 但内容是 <system-reminder> 包裹的注入指引）。
+  const userMsgs = messages.filter(m => m.role === 'user' && !isSystemReminder(m.content))
   if (userMsgs.length === 0) return null
   const last = userMsgs[userMsgs.length - 1]!
-  const text = oaiMessageText(last).trim()
+  let text = oaiMessageText(last).trim()
+  // 系统提醒可能以尾随片段合并到真实 user 消息上：剥离后若无实质内容则返回 null。
+  text = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ').trim()
   if (text.length === 0) return null
 
   // 延续指令/确认语无实质目标 → 返回 null（不触发目标变更）。
