@@ -13,6 +13,7 @@ import { sessionsDir } from '../config/paths.js'
 import { aggregateCacheUsage } from '../cache/usage-aggregator.js'
 import { loadConfig } from '../config/manager.js'
 import { findModelPricing } from '../utils/pricing.js'
+import { dateStabilityProbe } from '../prompt/date-guard.js'
 
 const MAX_DAYS = 90
 
@@ -59,6 +60,39 @@ export function buildCacheRoutes(deps: CacheRoutesDeps): Record<string, RouteHan
         // 回看天数只由 aggregate.windowDays 表达——`days` 在 aggregate 里是按天
         // 明细数组，再加一个同名标量会被 spread 覆盖成数组，两种含义撞车。
         return { status: 200, body: { scope, sessionsRoot, ...aggregate } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    },
+
+    // 聚合健康报告（P2）：命中率 + 日期稳定性探针，供监控/诊断一次性查全。
+    'GET /cache/doctor': async (body, params, headers) => {
+      if (!isAuthorizedRequest({ body, headers }, deps.apiToken)) {
+        return { status: 401, body: { error: 'Unauthorized' } }
+      }
+      const cfg = loadConfig()
+      const providers = cfg.provider.providers
+      const providerName = cfg.provider.default
+      try {
+        const aggregate = await aggregateCacheUsage({
+          sessionsRoot: sessionsDir(),
+          days: 1,
+          resolvePricing: (model, provider) => findModelPricing(providers, provider ?? providerName, model),
+        })
+        const dateProbe = dateStabilityProbe()
+        return {
+          status: 200,
+          body: {
+            hitRate: aggregate.totals.hitRate,
+            requests: aggregate.totals.requests,
+            cacheRead: aggregate.totals.cacheRead,
+            cacheCreate: aggregate.totals.cacheCreate,
+            dateStable: dateProbe.stable,
+            dateHits: dateProbe.hits,
+            scannedFiles: aggregate.scannedFiles,
+            windowDays: aggregate.windowDays,
+          },
+        }
       } catch (err) {
         return { status: 500, body: { error: (err as Error).message } }
       }
