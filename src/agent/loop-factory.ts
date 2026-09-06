@@ -291,6 +291,17 @@ export function createTurnStreamController(self: AgentLoop): TurnStreamControlle
           if (self.prevHitRate !== null && self.prevHitRate - hitRateNum > 15) {
             const diag = diagnoseCacheMiss(self.session.getCacheHistory(), turn, null, wasRewritten)
             if (diag) entry.diagnose = `${diag.reason}: ${diag.message}`
+            // P1 取证：悬崖时 dump 上线 wire body 字节，供事后相邻 diff 定位分叉点
+            // （对齐 KB「命中率骤降 dump req-*.json」的做法）。
+            const wireBody = self.config.client.consumeLastWireBody?.()
+            if (wireBody) {
+              const dumpDir = join(getSessionDir(self.cwd), sid)
+              const dumpPath = join(dumpDir, `wire-body-${turn}.json`)
+              entry.wireBodyDump = dumpPath
+              import('node:fs/promises').then(fs =>
+                fs.mkdir(dumpDir, { recursive: true }).then(() => fs.writeFile(dumpPath, wireBody)),
+              ).catch(() => {})
+            }
             // Cross-validate: tokenEfficiency also collapsing → cache-break compensation loop
             if (te !== undefined && self.prevTokenEfficiency !== undefined && self.prevTokenEfficiency > 0.5 && te < 0.2) {
               entry.diagnose = (entry.diagnose ? `${entry.diagnose}; ` : '') + 'possible cache-break compensation loop: tokenEfficiency collapsed alongside cache hit rate'

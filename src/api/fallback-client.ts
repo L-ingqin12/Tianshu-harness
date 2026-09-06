@@ -43,6 +43,10 @@ export class FallbackStreamClient implements StreamClient {
     return this.activeClient.consumeWireDivergence?.() ?? null
   }
 
+  consumeLastWireBody(): string | null {
+    return this.activeClient.consumeLastWireBody?.() ?? null
+  }
+
   async stream(
     request: OaiChatRequest,
     callbacks: StreamCallbacks,

@@ -63,4 +63,6 @@ export interface StreamClient {
   setThinking?(mode: 'enabled' | 'disabled'): void
   /** Consume-once accessor for the latest wire-level prefix divergence. Optional. */
   consumeWireDivergence?(): WireDivergence | null
+  /** P1 取证：consume-once 返回最近一次上线 wire body 字节（可选，仅 OpenAIClient 实现）。 */
+  consumeLastWireBody?(): string | null
 }

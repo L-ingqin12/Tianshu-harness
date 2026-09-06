@@ -373,6 +373,8 @@ export class OpenAIClient implements StreamClient {
   private prevWireSignatures: Array<{ sig: string; len: number; role: string }> | null = null
   /** Latest wire divergence (consume-once via consumeWireDivergence). */
   private lastWireDivergence: WireDivergence | null = null
+  /** 最近一次上线 wire body 字节（P1 取证，consume-once via consumeLastWireBody）。 */
+  private lastWireBody: string | null = null
   /** undici ProxyAgent for config.proxy (undefined = no per-provider proxy). */
   private readonly proxyDispatcher: ProxyAgent | undefined
 
@@ -635,6 +637,13 @@ export class OpenAIClient implements StreamClient {
     return d
   }
 
+  /** P1 取证：consume-once 返回最近一次上线 wire body 字节（命中率悬崖时 dump 用）。 */
+  consumeLastWireBody(): string | null {
+    const b = this.lastWireBody
+    this.lastWireBody = null
+    return b
+  }
+
   /** Shared inner retry+fetch+SSE loop used by both stream and streamOai. */
   private async sendStream(
     body: Record<string, unknown>,
@@ -718,7 +727,8 @@ export class OpenAIClient implements StreamClient {
           ...authHeaders,
           ...(this.config.sessionId ? { 'X-Request-Session': this.config.sessionId } : {}),
         },
-        body: JSON.stringify(effectiveBody),
+        // P1 取证：留存上线字节，供命中率悬崖时 dump（不改变发送内容）。
+        body: (this.lastWireBody = JSON.stringify(effectiveBody)),
         signal: lifecycle.signal,
       }, fetchTimeout, this.proxyDispatcher)
 
