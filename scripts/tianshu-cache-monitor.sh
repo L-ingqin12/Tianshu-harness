@@ -32,6 +32,18 @@ mkdir -p "$MONITOR_DIR"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# 逃生开关（E1）：设 TIANSHU_CACHE_MONITOR_DISABLED=1 或 touch .disabled → once/run/daemon 静默退出
+# （stop/status 不受影响，保证能停守护、能看状态）。
+case "${1:-once}" in
+  stop|status) ;;
+  *)
+    if [ "${TIANSHU_CACHE_MONITOR_DISABLED:-0}" = "1" ] || [ -f "$MONITOR_DIR/.disabled" ]; then
+      echo "[$(ts)] ⛔ 逃生开关已启用（TIANSHU_CACHE_MONITOR_DISABLED=1 或 $MONITOR_DIR/.disabled），静默退出"
+      exit 0
+    fi
+    ;;
+esac
+
 # node 脚本：从 JSON 文件抽取字段（含安全的数值兜底）
 node_field() {
   # $1 = json 文件路径, $2 = 点路径表达式（如 totals.hitRate）
@@ -49,6 +61,8 @@ try {
 
 fetch_stats() {
   local out="$MONITOR_DIR/.stats.tmp"
+  # 关键：先清旧文件，避免 curl 连接失败时读到上一次的陈旧数据（误判为有数据）。
+  rm -f "$out"
   if [ -n "$TIANSHU_TOKEN" ]; then
     curl -s -H "Authorization: Bearer $TIANSHU_TOKEN" "$TIANSHU_URL/cache/usage?days=1&scope=all" -o "$out" 2>/dev/null
   else
@@ -160,11 +174,25 @@ case "${1:-once}" in
     ;;
   daemon)
     nohup bash "$0" run >> "$MONITOR_DIR/daemon.log" 2>&1 &
-    echo "监控守护已启动 (PID $!) · 日志 $MONITOR_DIR/daemon.log · 停止 kill $!"
+    echo $! > "$MONITOR_DIR/daemon.pid"
+    echo "监控守护已启动 (PID $!) · 日志 $MONITOR_DIR/daemon.log · 停止 bash $0 stop"
+    ;;
+  stop)
+    if [ -f "$MONITOR_DIR/daemon.pid" ]; then
+      pid=$(cat "$MONITOR_DIR/daemon.pid" 2>/dev/null)
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null && echo "已停止守护 (PID $pid)"
+      else
+        echo "守护未运行（PID 文件过期）"
+      fi
+      rm -f "$MONITOR_DIR/daemon.pid"
+    else
+      echo "无守护 PID 文件（守护未启动）"
+    fi
     ;;
   status)
     echo "=== 最近检查 ==="; tail -5 "$LOG_FILE" 2>/dev/null || echo "(无记录)"
     echo "=== dump 历史 ==="; ls -lt "$MONITOR_DIR"/dump-* 2>/dev/null | head -5 || echo "(无 dump)"
     ;;
-  *) echo "Usage: $0 {once|run|daemon|status}" ;;
+  *) echo "Usage: $0 {once|run|daemon|stop|status}" ;;
 esac
