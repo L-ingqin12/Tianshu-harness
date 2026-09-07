@@ -46,7 +46,7 @@ function isCjkCodePoint(code: number): boolean {
   )
 }
 
-function estimateTokens(text: string): number {
+export function estimateTokens(text: string): number {
   let ascii = 0
   let cjk = 0
   for (const ch of text) {
@@ -60,7 +60,7 @@ function estimateTokens(text: string): number {
  *  单次后向扫描累计字符类计数，O(len)，避免逐切片重估的 O(len²)。
  *  按 UTF-16 code unit 遍历（对齐 slice 语义）；astral 字符（代理对）的低代理项跳过、
  *  高代理项计为 ascii，与 micro.ts 的 code-point 计法仅在此罕见情形有可忽略差异。 */
-function tailCutIndex(text: string, n: number): number {
+export function tailCutIndex(text: string, n: number): number {
   const len = text.length
   if (len === 0) return 0
   if (estimateTokens(text) <= n) return 0 // 整体已达标，无需截断
@@ -122,7 +122,7 @@ function defaultProN(): number {
 // 1. Spark provider preset
 // ---------------------------------------------------------------------------
 
-function sparkPreset(): ProviderConfig {
+export function sparkPreset(): ProviderConfig {
   return {
     name: SPARK_PROVIDER,
     apiKeyEnv: 'DEEPSEEK_SPARK_API_KEY',
@@ -174,7 +174,7 @@ function sparkPreset(): ProviderConfig {
 // 2. WireTransform：reasoning 尾部截断（保留尾部 N token，丢弃前段）
 // ---------------------------------------------------------------------------
 
-function wireTransform(m: OaiMessage, model: string | undefined, ctx?: WireTransformContext): OaiMessage {
+export function wireTransform(m: OaiMessage, model: string | undefined, ctx?: WireTransformContext): OaiMessage {
   if (m.role !== 'assistant' || typeof m.reasoning_content !== 'string') return m
   const text = m.reasoning_content
   const n = truncateNFor(ctx, model)
@@ -194,7 +194,7 @@ const EXCLUDE_MARKERS = [
   '放弃', '不要尝试', '不适合', '否决',
 ]
 
-function extractAnchors(reasoning: string, model: string | undefined, ctx?: WireTransformContext): string[] {
+export function extractAnchors(reasoning: string, model: string | undefined, ctx?: WireTransformContext): string[] {
   const n = truncateNFor(ctx, model)
   const i = tailCutIndex(reasoning, n)
   if (i <= 0) return []
@@ -236,7 +236,7 @@ const CONTINUATION_PATTERNS = [
   /^(ok|好的|嗯|明白|收到|知道了)[\s。．.，,]*$/i,
 ]
 
-function extractGoal(messages: OaiMessage[]): string | null {
+export function extractGoal(messages: OaiMessage[]): string | null {
   // 跳过纯系统提醒注入（role:user 但内容是 <system-reminder> 包裹的注入指引）。
   const userMsgs = messages.filter(m => m.role === 'user' && !isSystemReminder(m.content))
   if (userMsgs.length === 0) return null
@@ -264,7 +264,7 @@ function extractGoal(messages: OaiMessage[]): string | null {
 // 5. WireContextDefaults：会话级冻结的截断 N
 // ---------------------------------------------------------------------------
 
-function wireContextDefaults(): WireTransformContext {
+export function wireContextDefaults(): WireTransformContext {
   // 每次调用返回新对象；env 解析只在会话首启发生，此后冻结进 meta。
   return { truncateN: { flash: defaultFlashN(), pro: defaultProN() } }
 }
